@@ -1,0 +1,77 @@
+.env
+node_modules
+# ==============================
+# 🔹 Node.js (Backend)
+# ==============================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# Environment variables
+.env
+.env.*
+
+# Uploads (temporary files)
+backend/uploads/
+
+# Logs
+logs/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# ==============================
+# 🔹 React Frontend
+# ==============================
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+
+# Vite cache
+frontend/.vite/
+
+# Env files
+frontend/.env
+
+# ==============================
+# 🔹 Python / Colab (AI Engine)
+# ==============================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Virtual environments
+venv/
+.env/
+.venv/
+
+# ==============================
+# 🔹 ML / Vector DB / Temp Data
+# ==============================
+chroma_db/
+*.sqlite3
+*.db
+
+# PDF temporary files
+*.pdf
+
+# ==============================
+# 🔹 IDE / Editor
+# ==============================
+.vscode/
+.idea/
+
+# ==============================
+# 🔹 Misc
+# ==============================
+*.zip
+*.tar
+*.gz
