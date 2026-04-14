@@ -1,665 +1,473 @@
-import { useState, useRef, useEffect } from 'react'
-import axios from 'axios'
+import { useState, useRef, useEffect, useCallback } from 'react'
 
-// ── Markdown renderer (uses marked via CDN – loaded in index.html) ──────────
-// We inline a tiny renderer to avoid adding a build dep.
-// Supports: headings, bold, italic, inline code, code blocks, lists, blockquotes, links
-function renderMarkdown(md) {
-  if (!md) return ''
-  let html = md
-    // Fenced code blocks
-    .replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) =>
-      `<pre class="code-block"><code class="lang-${lang}">${escapeHtml(code.trim())}</code></pre>`
-    )
-    // Inline code
-    .replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
-    // Headings
-    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^## (.+)$/gm,  '<h2>$1</h2>')
-    .replace(/^# (.+)$/gm,   '<h1>$1</h1>')
-    // Bold + italic
-    .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
-    .replace(/\*\*(.+?)\*\*/g,     '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g,         '<em>$1</em>')
-    // Blockquote
-    .replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>')
-    // Unordered list items
-    .replace(/^[-*•] (.+)$/gm, '<li>$1</li>')
-    // Ordered list items
-    .replace(/^\d+\. (.+)$/gm, '<li class="ordered">$1</li>')
-    // Wrap consecutive <li> in <ul>/<ol> (simple heuristic)
-    .replace(/(<li>[\s\S]*?<\/li>)/g, '<ul>$1</ul>')
-    // Horizontal rule
-    .replace(/^---$/gm, '<hr/>')
-    // Paragraphs (double newline)
-    .replace(/\n\n+/g, '</p><p>')
-    // Single newlines
-    .replace(/\n/g, '<br/>')
-
-  return `<p>${html}</p>`
+// ── Inline markdown renderer ───────────────────────────────────────────────────
+function renderMd(md = '') {
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+  let h = md
+    .replace(/```(\w*)\n?([\s\S]*?)```/g,(_,l,c)=>`<pre class="mc-pre"><code class="mc-code">${esc(c.trim())}</code></pre>`)
+    .replace(/`([^`]+)`/g,'<code class="mc-ic">$1</code>')
+    .replace(/^### (.+)$/gm,'<h3 class="mc-h3">$1</h3>')
+    .replace(/^## (.+)$/gm,'<h2 class="mc-h2">$1</h2>')
+    .replace(/^# (.+)$/gm,'<h1 class="mc-h1">$1</h1>')
+    .replace(/\*\*\*(.+?)\*\*\*/g,'<strong><em>$1</em></strong>')
+    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g,'<em>$1</em>')
+    .replace(/^> (.+)$/gm,'<blockquote class="mc-bq">$1</blockquote>')
+    .replace(/^[-•] (.+)$/gm,'<li>$1</li>')
+    .replace(/(<li>[\s\S]*?<\/li>)/g,'<ul class="mc-ul">$1</ul>')
+    .replace(/^---$/gm,'<hr class="mc-hr"/>')
+    .replace(/\n\n+/g,'</p><p class="mc-p">')
+    .replace(/\n/g,'<br/>')
+  return `<p class="mc-p">${h}</p>`
 }
 
-function escapeHtml(str) {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-}
-
-// ── Copy-to-clipboard hook ──────────────────────────────────────────────────
-function useCopy() {
-  const [copied, setCopied] = useState(false)
-  const copy = (text) => {
-    navigator.clipboard.writeText(text)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
-  return [copied, copy]
-}
-
-// ── Stat pill ────────────────────────────────────────────────────────────────
-function Pill({ label, value, color }) {
+// ── Citation card (expandable) ─────────────────────────────────────────────────
+function CitationCard({ cite, index }) {
+  const [open, setOpen] = useState(false)
   return (
-    <div style={{
-      display: 'flex', flexDirection: 'column', alignItems: 'center',
-      background: 'rgba(255,255,255,0.05)', border: `1px solid ${color}33`,
-      borderRadius: 10, padding: '10px 18px', minWidth: 80
-    }}>
-      <span style={{ fontSize: 20, fontWeight: 700, color }}>{value}</span>
-      <span style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>{label}</span>
-    </div>
+    <button onClick={()=>setOpen(o=>!o)} className={`cite-card${open?' cite-open':''}`} title="Click to see source snippet">
+      <span className="cite-num">{index+1}</span>
+      {/* Handles the new "multi" page boundary gracefully */}
+      <span className="cite-pg">{cite.page === 'multi' ? 'Section' : `pg ${cite.page}`}</span>
+      {open && cite.text && <span className="cite-snippet">"{cite.text}"</span>}
+    </button>
   )
 }
 
-// ── Individual chat bubble ────────────────────────────────────────────────────
-function ChatBubble({ msg, index }) {
-  const [copied, copy] = useCopy()
-  const isUser   = msg.role === 'user'
-  const isSystem = msg.role === 'system'
-  const isAI     = msg.role === 'ai'
+// ── Search type badge ──────────────────────────────────────────────────────────
+function SearchBadge({ type }) {
+  if (!type) return null
+  const t = type.toUpperCase()
+  // Aligned with the new backend routing logic
+  const label = t.includes('AGENTIC') ? '🗺 Agentic Summary' : t.includes('CLARIFY') ? '💬 Clarify' : '⚡ Semantic Search'
+  return <span className="search-badge">{label}</span>
+}
 
+// ── Streaming cursor ───────────────────────────────────────────────────────────
+function Cursor() { return <span className="stream-cursor" aria-hidden>▋</span> }
+
+// ── Chat bubble ────────────────────────────────────────────────────────────────
+function Bubble({ msg, streaming }) {
+  const user = msg.role === 'user'
   return (
-    <div style={{
-      display: 'flex',
-      justifyContent: isUser ? 'flex-end' : 'flex-start',
-      marginBottom: 20,
-      animation: `fadeSlide 0.3s ease forwards`,
-      animationDelay: `${index * 0.04}s`,
-      opacity: 0,
-    }}>
-      {/* Avatar for AI / system */}
-      {!isUser && (
-        <div style={{
-          width: 34, height: 34, borderRadius: '50%',
-          background: isAI ? 'linear-gradient(135deg,#6366f1,#8b5cf6)' : '#334155',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 16, marginRight: 10, flexShrink: 0, marginTop: 4,
-          boxShadow: isAI ? '0 0 12px #6366f155' : 'none'
-        }}>
-          {isAI ? '✦' : 'ℹ'}
-        </div>
-      )}
-
-      <div style={{ maxWidth: '78%' }}>
-        {/* Role label */}
-        <div style={{
-          fontSize: 11, fontWeight: 600, letterSpacing: '0.08em',
-          color: isUser ? '#94a3b8' : isAI ? '#818cf8' : '#64748b',
-          marginBottom: 5, textAlign: isUser ? 'right' : 'left',
-          textTransform: 'uppercase'
-        }}>
-          {isUser ? 'You' : isAI ? 'Assistant' : 'System'}
-        </div>
-
-        {/* Bubble */}
-        <div style={{
-          padding: '14px 18px',
-          borderRadius: isUser ? '18px 4px 18px 18px' : '4px 18px 18px 18px',
-          background: isUser
-            ? 'linear-gradient(135deg, #4f46e5, #7c3aed)'
-            : isSystem ? 'rgba(51,65,85,0.6)' : 'rgba(30,41,59,0.9)',
-          color: '#e2e8f0',
-          border: isAI ? '1px solid rgba(99,102,241,0.25)' : 'none',
-          boxShadow: isAI ? '0 4px 24px rgba(0,0,0,0.2)' : 'none',
-          fontSize: 14.5, lineHeight: '1.65',
-        }}>
-          {isAI ? (
-            <div
-              className="md-content"
-              dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
-            />
-          ) : (
-            <span>{msg.content}</span>
-          )}
-
-          {/* Citations */}
-          {msg.citations?.length > 0 && (
-            <div style={{
-              marginTop: 12, paddingTop: 12,
-              borderTop: '1px solid rgba(255,255,255,0.1)',
-              display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center'
-            }}>
-              <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600 }}>SOURCES</span>
-              {msg.citations.map((c, i) => (
-                <span key={i} style={{
-                  background: 'rgba(99,102,241,0.2)', border: '1px solid rgba(99,102,241,0.4)',
-                  borderRadius: 6, padding: '2px 9px', fontSize: 12, color: '#a5b4fc',
-                  fontWeight: 600
-                }}>
-                  pg {c.page}
-                </span>
-              ))}
+    <div className={`brow ${user?'brow-u':'brow-a'}`}>
+      {!user && <div className="av av-a">✦</div>}
+      <div className={`bubble ${user?'bubble-u':'bubble-a'}`}>
+        {user
+          ? <p className="plain">{msg.content}</p>
+          : <div className="md-body" dangerouslySetInnerHTML={{__html:renderMd(msg.content)}}/>
+        }
+        {streaming && <Cursor/>}
+        {!streaming && msg.searchType && (
+          <div className="meta-row"><SearchBadge type={msg.searchType}/></div>
+        )}
+        {!streaming && msg.citations?.length > 0 && (
+          <div className="cites-area">
+            <span className="cites-label">Sources</span>
+            <div className="cites-list">
+              {msg.citations.map((c,i)=><CitationCard key={i} cite={c} index={i}/>)}
             </div>
-          )}
-
-          {/* Search type badge */}
-          {msg.searchType && (
-            <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 5 }}>
-              <span style={{
-                fontSize: 11, background: 'rgba(6,182,212,0.15)',
-                border: '1px solid rgba(6,182,212,0.3)',
-                color: '#22d3ee', borderRadius: 20, padding: '2px 10px', fontWeight: 600
-              }}>
-                ⚡ {msg.searchType}
-              </span>
-            </div>
-          )}
-        </div>
-
-        {/* Copy button for AI messages */}
-        {isAI && (
-          <button onClick={() => copy(msg.content)} style={{
-            marginTop: 6, background: 'none', border: 'none', cursor: 'pointer',
-            color: copied ? '#34d399' : '#64748b', fontSize: 11, padding: '2px 0',
-            display: 'flex', alignItems: 'center', gap: 4, transition: 'color 0.2s'
-          }}>
-            {copied ? '✓ Copied' : '⎘ Copy response'}
-          </button>
+          </div>
         )}
       </div>
-
-      {/* User avatar */}
-      {isUser && (
-        <div style={{
-          width: 34, height: 34, borderRadius: '50%',
-          background: 'linear-gradient(135deg,#4f46e5,#7c3aed)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 14, marginLeft: 10, flexShrink: 0, marginTop: 4,
-        }}>
-          👤
-        </div>
-      )}
+      {user && <div className="av av-u">U</div>}
     </div>
   )
 }
 
-// ── Typing indicator ─────────────────────────────────────────────────────────
-function TypingIndicator() {
+// ── Typing indicator ───────────────────────────────────────────────────────────
+function TypingDots() {
   return (
-    <div style={{ display: 'flex', alignItems: 'flex-start', marginBottom: 20 }}>
-      <div style={{
-        width: 34, height: 34, borderRadius: '50%',
-        background: 'linear-gradient(135deg,#6366f1,#8b5cf6)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        fontSize: 16, marginRight: 10, flexShrink: 0,
-        boxShadow: '0 0 12px #6366f155'
-      }}>✦</div>
-      <div style={{
-        padding: '14px 20px', borderRadius: '4px 18px 18px 18px',
-        background: 'rgba(30,41,59,0.9)', border: '1px solid rgba(99,102,241,0.25)',
-        display: 'flex', alignItems: 'center', gap: 6
-      }}>
-        {[0, 1, 2].map(i => (
-          <div key={i} style={{
-            width: 7, height: 7, borderRadius: '50%',
-            background: '#818cf8', animation: `bounce 1.2s infinite`,
-            animationDelay: `${i * 0.2}s`
-          }} />
-        ))}
+    <div className="brow brow-a">
+      <div className="av av-a">✦</div>
+      <div className="bubble bubble-a typing-bubble">
+        <span className="dot"/><span className="dot"/><span className="dot"/>
       </div>
     </div>
   )
 }
 
-// ── Main App ─────────────────────────────────────────────────────────────────
-export default function App() {
-  const [file, setFile]           = useState(null)
-  const [pdfUrl, setPdfUrl]       = useState(null)
-  const [isUploading, setIsUploading] = useState(false)
-  const [isReady, setIsReady]     = useState(false)
-  const [query, setQuery]         = useState('')
-  const [messages, setMessages]   = useState([])
-  const [isTyping, setIsTyping]   = useState(false)
-  const [docName, setDocName]     = useState('')
-  const [msgCount, setMsgCount]   = useState(0)
-  const [sourceCount, setSourceCount] = useState(0)
-  const chatEndRef = useRef(null)
-  const inputRef   = useRef(null)
+// ── Upload / document panel ────────────────────────────────────────────────────
+function UploadPanel({ onReady }) {
+  const [file, setFile]     = useState(null)
+  const [status, setStatus] = useState('idle')
+  const [progress, setProgress] = useState('')
+  const [docMeta, setDocMeta]   = useState(null)
+  const [pdfUrl, setPdfUrl]     = useState(null)
+  const pollRef = useRef(null)
 
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, isTyping])
+  // Aligned with the new ultra-fast backend states
+  const LABELS = { queued:'Queued…', processing:'Indexing Document…', completed:'Ready!', failed:'Failed' }
 
-  const handleFileChange = (e) => {
-    const f = e.target.files[0]
-    if (f?.type === 'application/pdf') {
-      setFile(f)
-      setPdfUrl(URL.createObjectURL(f))
-      setDocName(f.name)
-      setIsReady(false)
-      setMessages([])
-    } else {
-      alert('Please select a valid PDF file.')
-    }
+  const stopPoll = () => { if(pollRef.current){ clearInterval(pollRef.current); pollRef.current=null } }
+
+  const pollStatus = useCallback(async id => {
+    try {
+      const r = await fetch(`http://localhost:5000/api/status/${id}`)
+      if(!r.ok) return
+      const d = await r.json()
+      setProgress(LABELS[d.status]??d.status)
+      if(d.status==='completed'){ stopPoll(); setStatus('ready'); setDocMeta(d.metadata); onReady(true) }
+      else if(d.status==='failed'){ stopPoll(); setStatus('error'); setProgress(d.error??'Unknown error') }
+    } catch{}
+  },[onReady])
+
+  const handleFile = f => {
+    if(!f||f.type!=='application/pdf') return
+    setFile(f); setPdfUrl(URL.createObjectURL(f)); setStatus('idle'); setDocMeta(null); onReady(false)
   }
 
   const handleUpload = async () => {
-    if (!file) return
-    setIsUploading(true)
-    const formData = new FormData()
-    formData.append('pdf', file)
+    if(!file||status==='uploading'||status==='polling') return
+    setStatus('uploading'); setProgress('Uploading…')
+    const fd = new FormData(); fd.append('pdf', file)
     try {
-      await axios.post('http://localhost:5000/api/upload', formData)
-      setIsReady(true)
-      setMessages([{
-        role: 'system',
-        content: `✅ **${docName}** indexed with Hybrid Search (BM25 + Vector). Ready to answer your questions.`,
-        citations: []
-      }])
-    } catch {
-      alert('❌ Failed to process PDF.')
-    } finally {
-      setIsUploading(false)
+      const r = await fetch('http://localhost:5000/api/upload',{method:'POST',body:fd})
+      if(!r.ok) throw new Error(`HTTP ${r.status}`)
+      const {job_id} = await r.json()
+      setStatus('polling'); setProgress('Queued…')
+      pollRef.current = setInterval(()=>pollStatus(job_id), 2000) // Lowered polling to 1s because local ingestion is fast
+    } catch(e){ setStatus('error'); setProgress(e.message) }
+  }
+
+  useEffect(()=>()=>stopPoll(),[])
+
+  return (
+    <div className="up-panel">
+      <div className="up-header">
+        <span className="up-icon">📄</span>
+        <div>
+          <div className="up-title">Document</div>
+          {docMeta?.title && <div className="up-sub" title={docMeta.title}>{docMeta.title.length>38?docMeta.title.slice(0,36)+'…':docMeta.title}</div>}
+        </div>
+        {status==='ready' && <span className="ready-dot" title="Indexed"/>}
+      </div>
+
+      <div className={`drop-zone${file?' drop-filled':''}`} onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();handleFile(e.dataTransfer.files[0])}} onClick={()=>document.getElementById('pfinput').click()}>
+        <input id="pfinput" type="file" accept="application/pdf" style={{display:'none'}} onChange={e=>handleFile(e.target.files[0])}/>
+        {file
+          ? <div className="drop-info"><span style={{fontSize:26}}>📑</span><span className="drop-name">{file.name}</span><span className="drop-size">{(file.size/1024/1024).toFixed(1)} MB</span></div>
+          : <div className="drop-ph"><span className="drop-arrow">↑</span><span>Drop a PDF or click to browse</span></div>
+        }
+      </div>
+
+      {file && status!=='ready' && (
+        <button className={`up-btn${status==='uploading'||status==='polling'?' up-busy':''}`} onClick={handleUpload} disabled={status==='uploading'||status==='polling'}>
+          {status==='uploading'||status==='polling' ? <><span className="spin"/> {progress}</> : 'Index Document'}
+        </button>
+      )}
+      {status==='ready'  && <div className="status-bar status-ok">✓ Indexed{docMeta?.document_type&&' · '+docMeta.document_type}</div>}
+      {status==='error'  && <div className="status-bar status-err">⚠ {progress}</div>}
+
+      <div className="pdf-wrap">
+        {pdfUrl
+          ? <iframe src={pdfUrl} title="PDF preview" className="pdf-frame"/>
+          : <div className="pdf-ph"><span style={{fontSize:44,opacity:.15}}>📋</span><span style={{fontSize:12,opacity:.35}}>PDF preview</span></div>
+        }
+      </div>
+    </div>
+  )
+}
+
+// ── Main App ───────────────────────────────────────────────────────────────────
+export default function App() {
+  const [isReady, setIsReady]   = useState(false)
+  const [isTyping, setIsTyping] = useState(false)
+
+  const [messages, setMessages] = useState(()=>{
+    try{ const s=localStorage.getItem('rag_v4_opt'); return s?JSON.parse(s):[] } // Cache key updated for new version
+    catch{ return [] }
+  })
+
+  const [query, setQuery]             = useState('')
+  const [queryHistory, setQueryHistory] = useState([])
+  const [historyIndex, setHistoryIndex] = useState(-1)
+
+  const chatEndRef = useRef(null)
+  const inputRef   = useRef(null)
+  const abortRef   = useRef(null)
+
+  useEffect(()=>{
+    chatEndRef.current?.scrollIntoView({behavior:'smooth'})
+    try{ localStorage.setItem('rag_v4_opt', JSON.stringify(messages.slice(-60))) }catch{}
+  },[messages])
+
+  const clearSession = () => {
+    if(abortRef.current) abortRef.current.abort()
+    setMessages([]); setIsTyping(false)
+    try{ localStorage.removeItem('rag_v4_opt') }catch{}
+  }
+
+  const handleKeyDown = e => {
+    if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); handleAsk(); return }
+    if(e.key==='ArrowUp'){
+      e.preventDefault()
+      if(!queryHistory.length) return
+      const ni = Math.min(historyIndex+1, queryHistory.length-1)
+      setHistoryIndex(ni); setQuery(queryHistory[queryHistory.length-1-ni])
+    }
+    if(e.key==='ArrowDown'){
+      e.preventDefault()
+      if(historyIndex<=0){ setHistoryIndex(-1); setQuery(''); return }
+      const ni = historyIndex-1
+      setHistoryIndex(ni); setQuery(queryHistory[queryHistory.length-1-ni])
     }
   }
 
   const handleAsk = async () => {
-    if (!query.trim() || !isReady || isTyping) return
-    const userMsg = query.trim()
-    setQuery('')
-    setMessages(prev => [...prev, { role: 'user', content: userMsg, citations: [] }])
+    const q = query.trim()
+    if(!q||isTyping) return
+
+    setQuery(''); setHistoryIndex(-1)
+    setQueryHistory(prev=>[...prev,q])
+
+    const history = messages.filter(m=>m.role!=='system').slice(-6).map(({role,content})=>({role,content}))
+
+    setMessages(prev=>[...prev,{role:'user',content:q},{role:'ai',content:'',citations:[],searchType:''}])
     setIsTyping(true)
+
+    function processLine(line, setter) {
+      let p; try{ p=JSON.parse(line) }catch{ return }
+      setter(prev=>{
+        const msgs=[...prev], last=msgs[msgs.length-1]
+        if(!last||last.role!=='ai') return prev
+        if(p.type==='meta'){ last.citations=p.data?.citations??[]; last.searchType=p.data?.search_type??'' }
+        else if(p.type==='text'){ last.content+=p.text??'' }
+        return msgs
+      })
+    }
+
     try {
-      const { data } = await axios.post('http://localhost:5000/api/ask', { query: userMsg })
-      setMessages(prev => [...prev, {
-        role: 'ai',
-        content: data.answer,
-        citations: data.citations,
-        searchType: data.search_type
-      }])
-      setMsgCount(c => c + 1)
-      setSourceCount(c => c + (data.citations?.length || 0))
-    } catch {
-      setMessages(prev => [...prev, { role: 'system', content: '❌ Error connecting to AI Engine.', citations: [] }])
+      abortRef.current = new AbortController()
+      const resp = await fetch('http://localhost:5000/api/ask',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({query:q, chat_history:history}),
+        signal: abortRef.current.signal
+      })
+      if(!resp.ok) throw new Error(`Server error ${resp.status}`)
+
+      const reader = resp.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while(true){
+        const {done, value} = await reader.read()
+        if(done){
+          if(buffer.trim()) processLine(buffer.trim(), setMessages)
+          break
+        }
+        buffer += decoder.decode(value,{stream:true})
+        const lines = buffer.split('\n')
+        buffer = lines.pop()
+        for(const line of lines){ if(line.trim()) processLine(line, setMessages) }
+      }
+    } catch(e){
+      if(e.name!=='AbortError'){
+        setMessages(prev=>{
+          const m=[...prev], last=m[m.length-1]
+          if(last?.role==='ai') last.content='⚠ Connection error. Please try again.'
+          return m
+        })
+      }
     } finally {
       setIsTyping(false)
-      setTimeout(() => inputRef.current?.focus(), 100)
+      setTimeout(()=>inputRef.current?.focus(), 80)
     }
   }
 
-  const clearChat = () => {
-    setMessages([{
-      role: 'system',
-      content: `🗑️ Chat cleared. **${docName}** is still loaded — ask away!`,
-      citations: []
-    }])
-    setMsgCount(0)
-    setSourceCount(0)
-  }
+  const msgCount = messages.filter(m=>m.role==='user').length
+  const lastIsAiEmpty = isTyping && messages[messages.length-1]?.content===''
 
   return (
     <>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=DM+Mono:wght@400;500&family=Outfit:wght@300;400;500;600&display=swap');
+        *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+        :root{
+          --r:#B54A2A; --rl:#D4603E; --rp:#F5EAE5; --rm:#E8C4B4;
+          --ink:#1C1410; --ink2:#3D2B20; --ink3:#6B4C3B; --stone:#8C7B72;
+          --fog:#F7F3F0; --wh:#FFFFFF; --bd:#E8DDD8; --bd2:#D4C8C0;
+          --sh1:0 1px 3px rgba(28,20,16,.08); --sh2:0 4px 16px rgba(28,20,16,.10);
+        }
+        body{font-family:'Outfit',sans-serif;background:var(--fog);color:var(--ink);height:100vh;overflow:hidden}
+        .shell{display:flex;height:100vh;overflow:hidden}
 
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        /* Upload panel */
+        .up-panel{width:390px;min-width:320px;display:flex;flex-direction:column;background:var(--wh);border-right:1px solid var(--bd);box-shadow:var(--sh1)}
+        .up-header{display:flex;align-items:center;gap:12px;padding:18px 20px;border-bottom:1px solid var(--bd)}
+        .up-icon{font-size:21px}
+        .up-title{font-family:'Lora',serif;font-weight:600;font-size:15px;color:var(--ink)}
+        .up-sub{font-size:11px;color:var(--stone);margin-top:1px;max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .ready-dot{width:9px;height:9px;border-radius:50%;background:#3B9C6A;margin-left:auto;box-shadow:0 0 0 3px rgba(59,156,106,.18);animation:pdot 2s infinite}
+        @keyframes pdot{0%,100%{box-shadow:0 0 0 3px rgba(59,156,106,.18)}50%{box-shadow:0 0 0 6px rgba(59,156,106,.07)}}
+        .drop-zone{margin:14px 16px 0;border:1.5px dashed var(--bd2);border-radius:12px;padding:18px;cursor:pointer;background:var(--fog);display:flex;align-items:center;justify-content:center;min-height:82px;transition:border-color .2s,background .2s}
+        .drop-zone:hover{border-color:var(--r);background:var(--rp)}
+        .drop-filled{border-style:solid;border-color:var(--rm);background:var(--rp)}
+        .drop-ph{display:flex;flex-direction:column;align-items:center;gap:5px;color:var(--stone);font-size:13px}
+        .drop-arrow{font-size:20px;color:var(--r)}
+        .drop-info{display:flex;flex-direction:column;align-items:center;gap:3px}
+        .drop-name{font-size:12.5px;font-weight:500;color:var(--ink2);text-align:center;word-break:break-all}
+        .drop-size{font-size:11px;color:var(--stone)}
+        .up-btn{margin:12px 16px 0;padding:11px;background:var(--r);color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:500;font-family:'Outfit',sans-serif;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:background .2s,transform .15s}
+        .up-btn:hover:not(:disabled){background:var(--rl);transform:translateY(-1px)}
+        .up-btn:disabled{opacity:.6;cursor:not-allowed;transform:none}
+        .up-busy{background:var(--ink3)!important}
+        .status-bar{margin:10px 16px 0;padding:8px 13px;border-radius:7px;font-size:12.5px;font-weight:500}
+        .status-ok{background:#EAF5EE;border:1px solid #A8D9BC;color:#2A7A4F}
+        .status-err{background:#FEF0EC;border:1px solid #F2B8A8;color:var(--r)}
+        .pdf-wrap{flex:1;margin:12px 16px 16px;border-radius:10px;overflow:hidden;border:1px solid var(--bd);display:flex;align-items:center;justify-content:center;background:var(--fog);min-height:0}
+        .pdf-frame{width:100%;height:100%;border:none;display:block}
+        .pdf-ph{display:flex;flex-direction:column;align-items:center;gap:8px}
 
-        body {
-          font-family: 'DM Sans', sans-serif;
-          background: #0d1117;
-          color: #e2e8f0;
-          height: 100vh;
-          overflow: hidden;
-        }
+        /* Chat panel */
+        .chat-panel{flex:1;display:flex;flex-direction:column;background:var(--fog);min-width:0}
+        .chat-header{display:flex;align-items:center;gap:14px;padding:16px 26px;background:var(--wh);border-bottom:1px solid var(--bd);box-shadow:var(--sh1);flex-shrink:0}
+        .chat-logo{width:36px;height:36px;background:var(--r);border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:17px;color:#fff;box-shadow:0 2px 8px rgba(181,74,42,.28)}
+        .ch-text{flex:1}
+        .ch-title{font-family:'Lora',serif;font-size:16px;font-weight:600;color:var(--ink)}
+        .ch-sub{font-size:11.5px;color:var(--stone);margin-top:1px}
+        .h-stats{display:flex;align-items:center;gap:9px}
+        .stat-chip{background:var(--rp);border:1px solid var(--rm);border-radius:20px;padding:3px 11px;font-size:12px;font-weight:500;color:var(--r)}
+        .clr-btn{padding:6px 13px;background:none;border:1px solid var(--bd2);border-radius:7px;font-size:12px;color:var(--stone);cursor:pointer;font-family:'Outfit',sans-serif;transition:border-color .2s,color .2s}
+        .clr-btn:hover{border-color:var(--r);color:var(--r)}
 
-        @keyframes fadeSlide {
-          from { opacity: 0; transform: translateY(10px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-        @keyframes bounce {
-          0%,80%,100% { transform: translateY(0); }
-          40%          { transform: translateY(-6px); }
-        }
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
-        @keyframes pulse-ring {
-          0%   { box-shadow: 0 0 0 0 rgba(99,102,241,0.4); }
-          70%  { box-shadow: 0 0 0 8px rgba(99,102,241,0); }
-          100% { box-shadow: 0 0 0 0 rgba(99,102,241,0); }
-        }
+        /* Messages */
+        .msgs{flex:1;overflow-y:auto;padding:26px 30px;display:flex;flex-direction:column;gap:6px;min-height:0}
+        .msgs::-webkit-scrollbar{width:5px}
+        .msgs::-webkit-scrollbar-thumb{background:var(--bd2);border-radius:3px}
+        .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:var(--stone);padding:36px}
+        .empty-glyph{width:60px;height:60px;background:var(--rp);border:1.5px solid var(--rm);border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:26px}
+        .empty-title{font-family:'Lora',serif;font-size:17px;color:var(--ink2);font-weight:600}
+        .empty-sub{font-size:13px;text-align:center;max-width:280px;line-height:1.6}
+        .sug-row{display:flex;flex-wrap:wrap;gap:7px;justify-content:center;margin-top:6px}
+        .sug{padding:7px 15px;background:var(--wh);border:1.5px solid var(--bd2);border-radius:20px;font-size:12.5px;color:var(--ink3);cursor:pointer;transition:border-color .2s,color .2s,background .2s;font-family:'Outfit',sans-serif}
+        .sug:hover{border-color:var(--r);color:var(--r);background:var(--rp)}
 
-        ::-webkit-scrollbar { width: 6px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: rgba(99,102,241,0.3); border-radius: 3px; }
+        /* Bubbles */
+        .brow{display:flex;align-items:flex-start;gap:10px;animation:fin .22s ease forwards}
+        @keyframes fin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+        .brow-u{justify-content:flex-end}
+        .brow-a{justify-content:flex-start}
+        .av{width:31px;height:31px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex-shrink:0;margin-top:4px}
+        .av-a{background:var(--r);color:#fff;font-size:14px;box-shadow:0 2px 6px rgba(181,74,42,.26)}
+        .av-u{background:var(--ink2);color:#fff;font-size:11px}
+        .bubble{max-width:73%;padding:13px 17px;border-radius:16px;font-size:14.5px;line-height:1.65;box-shadow:var(--sh1)}
+        .bubble-u{background:var(--r);color:#fff;border-radius:16px 4px 16px 16px}
+        .bubble-a{background:var(--wh);color:var(--ink);border:1px solid var(--bd);border-radius:4px 16px 16px 16px}
+        .plain{margin:0;line-height:1.55}
+        .typing-bubble{display:flex;align-items:center;gap:5px;padding:15px 18px}
+        .dot{width:7px;height:7px;border-radius:50%;background:var(--rm);display:inline-block;animation:bdot 1.2s infinite ease-in-out}
+        .dot:nth-child(2){animation-delay:.15s}.dot:nth-child(3){animation-delay:.30s}
+        @keyframes bdot{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-5px);background:var(--r)}}
+        .stream-cursor{display:inline-block;margin-left:2px;color:var(--r);animation:blink .9s step-start infinite}
+        @keyframes blink{50%{opacity:0}}
+        .meta-row{margin-top:10px;display:flex;align-items:center;gap:7px}
+        .search-badge{font-size:11px;font-weight:500;background:var(--rp);border:1px solid var(--rm);color:var(--r);border-radius:20px;padding:2px 9px}
 
-        /* Markdown content styles */
-        .md-content h1 { font-size: 1.35em; font-weight: 700; margin: 14px 0 8px; color: #c7d2fe; }
-        .md-content h2 { font-size: 1.15em; font-weight: 600; margin: 12px 0 6px; color: #c7d2fe; }
-        .md-content h3 { font-size: 1em;    font-weight: 600; margin: 10px 0 5px; color: #a5b4fc; }
-        .md-content p  { margin: 6px 0; }
-        .md-content strong { color: #f1f5f9; font-weight: 600; }
-        .md-content em     { color: #cbd5e1; font-style: italic; }
-        .md-content ul     { margin: 8px 0 8px 20px; }
-        .md-content li     { margin: 4px 0; line-height: 1.6; }
-        .md-content blockquote {
-          border-left: 3px solid #6366f1;
-          padding: 4px 12px;
-          margin: 10px 0;
-          background: rgba(99,102,241,0.08);
-          border-radius: 0 6px 6px 0;
-          color: #94a3b8;
-        }
-        .md-content hr { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 12px 0; }
-        .md-content a  { color: #818cf8; text-decoration: underline; }
+        /* Citations */
+        .cites-area{margin-top:11px;padding-top:11px;border-top:1px solid var(--bd)}
+        .cites-label{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--stone);display:block;margin-bottom:5px}
+        .cites-list{display:flex;flex-wrap:wrap;gap:5px}
+        .cite-card{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;background:var(--fog);border:1px solid var(--bd2);border-radius:20px;font-size:12px;color:var(--ink3);cursor:pointer;font-family:'Outfit',sans-serif;transition:border-color .2s,background .2s;flex-direction:row}
+        .cite-card:hover,.cite-open{border-color:var(--r);background:var(--rp)}
+        .cite-open{flex-direction:column!important;align-items:flex-start!important;padding:7px 11px!important}
+        .cite-num{font-family:'DM Mono',monospace;font-size:9.5px;font-weight:500;background:var(--r);color:#fff;border-radius:50%;width:15px;height:15px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+        .cite-pg{font-size:12px;color:var(--ink3);font-weight:500}
+        .cite-snippet{display:block;margin-top:4px;font-size:11px;color:var(--stone);font-style:italic;line-height:1.5;max-width:250px;white-space:normal}
 
-        .code-block {
-          background: rgba(0,0,0,0.4);
-          border: 1px solid rgba(255,255,255,0.08);
-          border-radius: 8px;
-          padding: 12px 14px;
-          margin: 10px 0;
-          overflow-x: auto;
-          font-family: 'JetBrains Mono', monospace;
-          font-size: 13px;
-          line-height: 1.55;
-          color: #a5f3fc;
-        }
-        .inline-code {
-          font-family: 'JetBrains Mono', monospace;
-          background: rgba(0,0,0,0.35);
-          border: 1px solid rgba(255,255,255,0.1);
-          border-radius: 4px;
-          padding: 1px 6px;
-          font-size: 0.88em;
-          color: #f9a8d4;
-        }
+        /* Markdown */
+        .md-body .mc-p{margin:4px 0}
+        .md-body .mc-h1{font-family:'Lora',serif;font-size:1.2em;font-weight:600;color:var(--ink);margin:12px 0 6px}
+        .md-body .mc-h2{font-family:'Lora',serif;font-size:1.05em;font-weight:600;color:var(--ink);margin:10px 0 5px}
+        .md-body .mc-h3{font-size:.95em;font-weight:600;color:var(--ink2);margin:8px 0 4px}
+        .md-body strong{font-weight:600;color:var(--ink)}
+        .md-body em{color:var(--ink3);font-style:italic}
+        .md-body .mc-ul{margin:5px 0 5px 17px}
+        .md-body li{margin:3px 0}
+        .md-body .mc-bq{border-left:3px solid var(--rm);padding:4px 12px;margin:7px 0;background:var(--rp);border-radius:0 4px 4px 0;color:var(--ink3);font-style:italic}
+        .md-body .mc-hr{border:none;border-top:1px solid var(--bd);margin:9px 0}
+        .md-body .mc-pre{background:var(--fog);border:1px solid var(--bd);border-radius:6px;padding:9px 13px;margin:7px 0;overflow-x:auto}
+        .md-body .mc-code{font-family:'DM Mono',monospace;font-size:12.5px;color:var(--r)}
+        .md-body .mc-ic{font-family:'DM Mono',monospace;background:var(--fog);border:1px solid var(--bd);border-radius:3px;padding:1px 5px;font-size:.88em;color:var(--r)}
 
-        .upload-btn {
-          position: relative;
-          overflow: hidden;
-          padding: 10px 20px;
-          background: linear-gradient(135deg,#4f46e5,#7c3aed);
-          color: white;
-          border: none;
-          border-radius: 10px;
-          font-weight: 600;
-          font-size: 14px;
-          cursor: pointer;
-          transition: opacity 0.2s, transform 0.15s;
-          white-space: nowrap;
-          font-family: 'DM Sans', sans-serif;
-        }
-        .upload-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none !important; }
-        .upload-btn:not(:disabled):hover { opacity: 0.9; transform: translateY(-1px); }
-
-        .send-btn {
-          padding: 0 24px;
-          background: linear-gradient(135deg,#059669,#0d9488);
-          color: white;
-          border: none;
-          border-radius: 12px;
-          font-weight: 700;
-          font-size: 15px;
-          cursor: pointer;
-          transition: opacity 0.2s, transform 0.15s;
-          flex-shrink: 0;
-          height: 50px;
-          font-family: 'DM Sans', sans-serif;
-        }
-        .send-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none !important; }
-        .send-btn:not(:disabled):hover { opacity: 0.9; transform: translateY(-1px); }
-
-        .clear-btn {
-          padding: 7px 14px;
-          background: rgba(239,68,68,0.1);
-          border: 1px solid rgba(239,68,68,0.25);
-          color: #fca5a5;
-          border-radius: 8px;
-          font-size: 12px;
-          font-weight: 600;
-          cursor: pointer;
-          transition: background 0.2s;
-          font-family: 'DM Sans', sans-serif;
-        }
-        .clear-btn:hover { background: rgba(239,68,68,0.2); }
-
-        .chat-input {
-          flex: 1;
-          padding: 14px 18px;
-          background: rgba(30,41,59,0.8);
-          border: 1.5px solid rgba(99,102,241,0.25);
-          border-radius: 12px;
-          color: #e2e8f0;
-          font-size: 15px;
-          font-family: 'DM Sans', sans-serif;
-          outline: none;
-          transition: border-color 0.2s, box-shadow 0.2s;
-          height: 50px;
-        }
-        .chat-input:focus {
-          border-color: rgba(99,102,241,0.6);
-          box-shadow: 0 0 0 3px rgba(99,102,241,0.12);
-        }
-        .chat-input::placeholder { color: #475569; }
-        .chat-input:disabled { opacity: 0.5; cursor: not-allowed; }
-
-        .file-label {
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          padding: 10px 16px;
-          background: rgba(30,41,59,0.8);
-          border: 1.5px dashed rgba(99,102,241,0.35);
-          border-radius: 10px;
-          cursor: pointer;
-          font-size: 13.5px;
-          color: #94a3b8;
-          transition: border-color 0.2s, background 0.2s;
-          white-space: nowrap;
-          overflow: hidden;
-          max-width: 220px;
-          text-overflow: ellipsis;
-        }
-        .file-label:hover {
-          border-color: rgba(99,102,241,0.6);
-          background: rgba(99,102,241,0.06);
-          color: #a5b4fc;
-        }
-
-        .panel {
-          display: flex;
-          flex-direction: column;
-          background: #0f172a;
-          border-right: 1px solid rgba(255,255,255,0.06);
-        }
-
-        .panel-header {
-          padding: 20px 24px;
-          border-bottom: 1px solid rgba(255,255,255,0.06);
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          background: rgba(15,23,42,0.95);
-          backdrop-filter: blur(10px);
-        }
-
-        .ready-dot {
-          width: 8px; height: 8px; border-radius: 50%;
-          background: #34d399;
-          animation: pulse-ring 2s infinite;
-        }
+        /* Input */
+        .input-bar{padding:14px 26px 18px;background:var(--wh);border-top:1px solid var(--bd);flex-shrink:0}
+        .input-wrap{display:flex;gap:9px;align-items:flex-end}
+        .chat-input{flex:1;padding:12px 15px;background:var(--fog);border:1.5px solid var(--bd2);border-radius:11px;font-size:14.5px;font-family:'Outfit',sans-serif;color:var(--ink);outline:none;transition:border-color .2s,box-shadow .2s;resize:none;min-height:46px;max-height:120px;line-height:1.5}
+        .chat-input:focus{border-color:var(--r);box-shadow:0 0 0 3px rgba(181,74,42,.10);background:var(--wh)}
+        .chat-input::placeholder{color:var(--stone)}
+        .chat-input:disabled{opacity:.5;cursor:not-allowed}
+        .send-btn{padding:12px 20px;background:var(--r);color:#fff;border:none;border-radius:11px;font-size:14px;font-weight:600;font-family:'Outfit',sans-serif;cursor:pointer;white-space:nowrap;transition:background .2s,transform .15s;height:46px;display:flex;align-items:center;gap:6px}
+        .send-btn:hover:not(:disabled){background:var(--rl);transform:translateY(-1px)}
+        .send-btn:disabled{opacity:.4;cursor:not-allowed;transform:none}
+        .input-hint{font-size:11px;color:var(--stone);margin-top:7px;text-align:center}
+        kbd{background:var(--fog);border:1px solid var(--bd2);border-radius:3px;padding:1px 5px;font-family:'DM Mono',monospace;font-size:10px;color:var(--ink3)}
+        .spin{width:12px;height:12px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite;display:inline-block}
+        @keyframes sp{to{transform:rotate(360deg)}}
       `}</style>
 
-      <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
+      <div className="shell">
+        <UploadPanel onReady={setIsReady}/>
 
-        {/* ── LEFT: PDF VIEWER ── */}
-        <div className="panel" style={{ width: '44%', minWidth: 360 }}>
-
+        <div className="chat-panel">
           {/* Header */}
-          <div className="panel-header">
-            <span style={{ fontSize: 20 }}>📄</span>
-            <div>
-              <div style={{ fontWeight: 700, fontSize: 15, color: '#f1f5f9' }}>Document Viewer</div>
-              {docName && <div style={{ fontSize: 11, color: '#64748b', marginTop: 1 }}>{docName}</div>}
+          <div className="chat-header">
+            <div className="chat-logo">✦</div>
+            <div className="ch-text">
+              <div className="ch-title">Hybrid RAG Assistant</div>
+              {/* Aligned subtitle with actual optimized stack */}
+              <div className="ch-sub">Local Parsing · Semantic Search · Agentic Summary</div>
             </div>
-            {isReady && <div className="ready-dot" style={{ marginLeft: 'auto' }} title="Indexed & ready" />}
-          </div>
-
-          {/* Controls */}
-          <div style={{ padding: '16px 20px', display: 'flex', gap: 10, alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-            <label className="file-label">
-              <span>📂</span>
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {file ? file.name : 'Choose PDF…'}
-              </span>
-              <input type="file" accept="application/pdf" onChange={handleFileChange} style={{ display: 'none' }} />
-            </label>
-
-            <button className="upload-btn" onClick={handleUpload} disabled={!file || isUploading}>
-              {isUploading ? (
-                <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{
-                    width: 13, height: 13, border: '2px solid rgba(255,255,255,0.4)',
-                    borderTopColor: 'white', borderRadius: '50%',
-                    display: 'inline-block', animation: 'spin 0.7s linear infinite'
-                  }} />
-                  Processing…
-                </span>
-              ) : '⚡ Index PDF'}
-            </button>
-          </div>
-
-          {/* PDF iframe */}
-          <div style={{ flex: 1, padding: 16, overflow: 'hidden' }}>
-            {pdfUrl ? (
-              <iframe
-                src={pdfUrl}
-                width="100%"
-                height="100%"
-                style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10 }}
-              />
-            ) : (
-              <div style={{
-                height: '100%', display: 'flex', flexDirection: 'column',
-                alignItems: 'center', justifyContent: 'center',
-                border: '2px dashed rgba(99,102,241,0.2)', borderRadius: 12,
-                color: '#475569'
-              }}>
-                <div style={{ fontSize: 48, marginBottom: 14, opacity: 0.5 }}>📑</div>
-                <div style={{ fontWeight: 600, fontSize: 15, color: '#64748b' }}>No document loaded</div>
-                <div style={{ fontSize: 13, marginTop: 5 }}>Select a PDF above to get started</div>
-              </div>
-            )}
-          </div>
-
-        </div>
-
-        {/* ── RIGHT: CHAT ── */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: '#0a0f1e' }}>
-
-          {/* Chat header */}
-          <div className="panel-header" style={{ justifyContent: 'space-between' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <div style={{
-                width: 36, height: 36, borderRadius: 10,
-                background: 'linear-gradient(135deg,#6366f1,#8b5cf6)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 18, boxShadow: '0 0 14px #6366f144'
-              }}>✦</div>
-              <div>
-                <div style={{ fontWeight: 700, fontSize: 15 }}>Hybrid RAG Assistant</div>
-                <div style={{ fontSize: 11, color: '#64748b' }}>BM25 + Vector Search · Powered by Claude</div>
-              </div>
-            </div>
-
-            {/* Stats + clear */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              {isReady && (
-                <>
-                  <Pill label="Messages" value={msgCount}    color="#818cf8" />
-                  <Pill label="Sources"  value={sourceCount} color="#34d399" />
-                  <button className="clear-btn" onClick={clearChat}>🗑 Clear</button>
-                </>
-              )}
+            <div className="h-stats">
+              {msgCount>0 && <span className="stat-chip">{msgCount} {msgCount===1?'query':'queries'}</span>}
+              {messages.length>0 && <button className="clr-btn" onClick={clearSession}>Clear</button>}
             </div>
           </div>
 
           {/* Messages */}
-          <div style={{ flex: 1, overflowY: 'auto', padding: '24px 28px' }}>
-            {messages.length === 0 ? (
-              <div style={{
-                height: '100%', display: 'flex', flexDirection: 'column',
-                alignItems: 'center', justifyContent: 'center', color: '#334155'
-              }}>
-                <div style={{ fontSize: 52, marginBottom: 14 }}>💬</div>
-                <div style={{ fontWeight: 600, fontSize: 16, color: '#475569' }}>
-                  Your conversation will appear here
-                </div>
-                <div style={{ fontSize: 13, marginTop: 6 }}>
-                  Index a PDF on the left, then ask anything about it
-                </div>
-                <div style={{
-                  display: 'flex', gap: 10, marginTop: 24, flexWrap: 'wrap', justifyContent: 'center'
-                }}>
-                  {['Summarize the document', 'List key findings', 'What are the conclusions?'].map(s => (
-                    <button key={s} onClick={() => { if (isReady) setQuery(s) }} style={{
-                      background: 'rgba(99,102,241,0.08)',
-                      border: '1px solid rgba(99,102,241,0.2)',
-                      borderRadius: 20, padding: '7px 14px', color: '#818cf8',
-                      fontSize: 12, cursor: 'pointer', fontFamily: 'DM Sans, sans-serif',
-                      transition: 'background 0.2s'
-                    }}>{s}</button>
+          <div className="msgs">
+            {messages.length===0 ? (
+              <div className="empty">
+                <div className="empty-glyph">💬</div>
+                <div className="empty-title">Ask your document anything</div>
+                <div className="empty-sub">Index a PDF on the left, then ask questions. The AI cites exact passages.</div>
+                <div className="sug-row">
+                  {['Summarize this document','What are the key findings?','List all recommendations'].map(s=>(
+                    <button key={s} className="sug" onClick={()=>{ if(isReady) setQuery(s) }}>{s}</button>
                   ))}
                 </div>
               </div>
             ) : (
-              messages.map((msg, i) => <ChatBubble key={i} msg={msg} index={i} />)
+              messages.map((msg,i)=>(
+                <Bubble key={i} msg={msg} streaming={isTyping && i===messages.length-1 && msg.role==='ai'}/>
+              ))
             )}
-            {isTyping && <TypingIndicator />}
-            <div ref={chatEndRef} />
+            {lastIsAiEmpty && <TypingDots/>}
+            <div ref={chatEndRef}/>
           </div>
 
-          {/* Input bar */}
-          <div style={{
-            padding: '16px 24px 20px',
-            borderTop: '1px solid rgba(255,255,255,0.06)',
-            background: 'rgba(10,15,30,0.95)',
-            backdropFilter: 'blur(10px)'
-          }}>
-            <div style={{ display: 'flex', gap: 10 }}>
-              <input
+          {/* Input */}
+          <div className="input-bar">
+            <div className="input-wrap">
+              <textarea
                 ref={inputRef}
                 className="chat-input"
-                placeholder={isReady ? 'Ask something about the document…' : 'Index a PDF first to start chatting…'}
+                rows={1}
+                placeholder={!isReady?'Index a document on the left first…':'Ask a question… (↑ history · Enter send)'}
                 value={query}
-                onChange={e => setQuery(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleAsk()}
-                disabled={!isReady || isTyping}
+                onChange={e=>{ setQuery(e.target.value); e.target.style.height='auto'; e.target.style.height=Math.min(e.target.scrollHeight,120)+'px' }}
+                onKeyDown={handleKeyDown}
+                disabled={!isReady||isTyping}
               />
-              <button className="send-btn" onClick={handleAsk} disabled={!isReady || isTyping || !query.trim()}>
-                {isTyping ? '…' : '↑ Send'}
+              <button className="send-btn" onClick={handleAsk} disabled={!isReady||isTyping||!query.trim()}>
+                {isTyping?<><span className="spin"/> Thinking</>: <>Send ↑</>}
               </button>
             </div>
-            <div style={{ fontSize: 11, color: '#334155', marginTop: 8, textAlign: 'center' }}>
-              Press <kbd style={{
-                background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)',
-                borderRadius: 4, padding: '1px 5px', fontFamily: 'JetBrains Mono, monospace',
-                fontSize: 11, color: '#64748b'
-              }}>Enter</kbd> to send &nbsp;·&nbsp; Responses are generated from your document only
+            <div className="input-hint">
+              <kbd>Enter</kbd> send · <kbd>↑↓</kbd> history · responses grounded in your document
             </div>
           </div>
-
         </div>
       </div>
     </>
